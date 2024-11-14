@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "1041726977158",
+    "firebase_url": "https://aboutbelg-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "aboutbelg",
+    "storage_bucket": "aboutbelg.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1041726977158:android:eab548b442d97053404d07",
+        "android_client_info": {
+          "package_name": "com.ysrtrk.aboutbelgium"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "1041726977158-g85lmgmuvsc2p7tpmi9o26l477fhsrbj.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.ysrtrk.aboutbelgium",
+            "certificate_hash": "86cf84f3b15700c469fd4774b1dbeb826cf99ac4"
+          }
+        },
+        {
+          "client_id": "1041726977158-v6r6di8mmqavff82p1ngt3p149eej48n.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbTWWNb5PUwzrxg27q2Ao1AKYXcbXaY4c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "1041726977158-v6r6di8mmqavff82p1ngt3p149eej48n.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "1041726977158-2gdgipr4la03ms7s7jd2nrpm0nemt0ip.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.aboutbelgium.aboutbelgium"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
