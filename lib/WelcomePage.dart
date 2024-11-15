@@ -24,6 +24,17 @@ class _WelcomePageState extends State<WelcomePage> {
   Map<String, bool> unreadStatusMap = {}; // Kullanıcıların okuma durumlarını saklar
   Map<String, int>unreadCountStatusMap = {};
   Map<String, Timestamp?> latestMessageTimestampMap = {}; // Store latest message timestamps
+  List<String> _blockedByList = [];
+
+  Future<void> _fetchBlockedByList() async {
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final userDoc = await FirebaseFirestore.instance.collection(userCollection).doc(userId).get();
+
+    if (userDoc.exists) {
+      _blockedByList = List<String>.from(userDoc.data()?['blockedBy'] ?? []);
+      setState(() {}); // Liste değiştiğinde yeniden çizin
+    }
+  }
 
   void _sendEmail() async {
     final Uri emailLaunchUri = Uri(
@@ -181,26 +192,31 @@ class _WelcomePageState extends State<WelcomePage> {
     super.didChangeDependencies();
     fetchUsersFromFirestore(); // Sayfa açıldığında güncel listeyi çek
   }
-  void fetchUsersFromFirestore() {
-    var userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+  void fetchUsersFromFirestore() async {
+    await _fetchBlockedByList(); // Engellenenleri önce al
 
-    // Kullanıcıları dinleyerek anlık güncellemeler alır
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
     FirebaseFirestore.instance.collection(userCollection).snapshots().listen((querySnapshot) async {
       List<Map<String, dynamic>> fetchedUsers = querySnapshot.docs.map((doc) => doc.data() as Map<String, dynamic>).toList();
-      var chatRoomsSnapshot = await FirebaseFirestore.instance.collection(privateChatCollection).get();
+      final chatRoomsSnapshot = await FirebaseFirestore.instance.collection(privateChatCollection).get();
       List<String> validUserIds = [];
 
       for (var doc in chatRoomsSnapshot.docs) {
-        // Her sohbet odasının messages alt koleksiyonunu dinler
+        // Sohbet odasının messages alt koleksiyonunu dinler
         FirebaseFirestore.instance
             .collection(privateChatCollection)
             .doc(doc.id)
             .collection(privateSecondChatCollection)
             .snapshots()
             .listen((messageSnapshot) {
-          // Mesajlar varsa kullanıcı ID'sini ayıkla
           if (messageSnapshot.docs.isNotEmpty) {
             String cleanedUserId = doc.id.replaceAll(userId, '').replaceAll('_', '');
+
+            // Engellenen kullanıcıları atla
+            if (_blockedByList.contains(cleanedUserId)) {
+              return;
+            }
+
             validUserIds.add(cleanedUserId);
 
             bool hasUnreadMessage = messageSnapshot.docs.any((messageDoc) =>
@@ -211,7 +227,7 @@ class _WelcomePageState extends State<WelcomePage> {
             messageDoc[privateChatIsRead] == false && messageDoc[privateChatReceiverId] == userId).length;
             unreadCountStatusMap[cleanedUserId] = unreadCount;
 
-            // En son mesajın timestamp’ini al
+            // En son mesajın zaman damgasını al
             Timestamp? latestTimestamp;
             List<Timestamp> timestamps = messageSnapshot.docs
                 .map((messageDoc) => messageDoc[privateChatTime] as Timestamp)
@@ -221,7 +237,6 @@ class _WelcomePageState extends State<WelcomePage> {
             }
             latestMessageTimestampMap[cleanedUserId] = latestTimestamp;
 
-            // State’i anlık olarak güncelle
             setState(() {
               documents = validUserIds;
               users = fetchedUsers.where((user) => documents.contains(user[userId])).toList();
@@ -247,9 +262,14 @@ class _WelcomePageState extends State<WelcomePage> {
       });
     });
   }
+
   int getUnreadCount() {
-    return unreadCountStatusMap.values.where((count) => count > 0).length;
+    return unreadCountStatusMap.entries
+        .where((entry) => !_blockedByList.contains(entry.key) && entry.value > 0)
+        .map((entry) => entry.value)
+        .fold(0, (prev, count) => prev + count);
   }
+
 
   void _goToLanguagePage(BuildContext context) {
     Navigator.pushReplacement(

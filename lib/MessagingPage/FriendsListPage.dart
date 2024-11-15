@@ -22,7 +22,16 @@ class _FriendsListPageState extends State<FriendsListPage> {
   Map<String, bool> unreadStatusMap = {}; // Kullanıcıların okuma durumlarını saklar
   Map<String, int>unreadCountStatusMap = {};
   Map<String, Timestamp?> latestMessageTimestampMap = {}; // Store latest message timestamps
+  List<String> _blockedByList = [];
 
+  Future<void> _fetchBlockedByList() async {
+    FirebaseFirestore.instance.collection(userCollection).doc(widget.currentUserId).snapshots().listen((userDoc) {
+      if (userDoc.exists) {
+        _blockedByList = List<String>.from(userDoc.data()?['blockedBy'] ?? []);
+        setState(() {}); // Liste değiştiğinde yeniden çizin
+      }
+    });
+  }
   @override
   void initState() {
     super.initState();
@@ -32,29 +41,33 @@ class _FriendsListPageState extends State<FriendsListPage> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _fetchBlockedByList();
     fetchUsersFromFirestore(); // Sayfa açıldığında güncel listeyi çek
   }
 
   void fetchUsersFromFirestore() {
-    var userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    var userId = widget.currentUserId;
 
-    // Kullanıcıları dinleyerek anlık güncellemeler alır
     FirebaseFirestore.instance.collection(userCollection).snapshots().listen((querySnapshot) async {
       List<Map<String, dynamic>> fetchedUsers = querySnapshot.docs.map((doc) => doc.data() as Map<String, dynamic>).toList();
       var chatRoomsSnapshot = await FirebaseFirestore.instance.collection(privateChatCollection).get();
       List<String> validUserIds = [];
 
       for (var doc in chatRoomsSnapshot.docs) {
-        // Her sohbet odasının messages alt koleksiyonunu dinler
         FirebaseFirestore.instance
             .collection(privateChatCollection)
             .doc(doc.id)
             .collection(privateSecondChatCollection)
             .snapshots()
             .listen((messageSnapshot) {
-          // Mesajlar varsa kullanıcı ID'sini ayıkla
           if (messageSnapshot.docs.isNotEmpty) {
             String cleanedUserId = doc.id.replaceAll(userId, '').replaceAll('_', '');
+
+            // Eğer kullanıcı sizi engellediyse, işlemden atla
+            if (_blockedByList.contains(cleanedUserId)) {
+              return;
+            }
+
             validUserIds.add(cleanedUserId);
 
             bool hasUnreadMessage = messageSnapshot.docs.any((messageDoc) =>
@@ -65,7 +78,6 @@ class _FriendsListPageState extends State<FriendsListPage> {
             messageDoc[privateChatIsRead] == false && messageDoc[privateChatReceiverId] == userId).length;
             unreadCountStatusMap[cleanedUserId] = unreadCount;
 
-            // En son mesajın timestamp’ini al
             Timestamp? latestTimestamp;
             List<Timestamp> timestamps = messageSnapshot.docs
                 .map((messageDoc) => messageDoc[privateChatTime] as Timestamp)
@@ -75,12 +87,10 @@ class _FriendsListPageState extends State<FriendsListPage> {
             }
             latestMessageTimestampMap[cleanedUserId] = latestTimestamp;
 
-            // State’i anlık olarak güncelle
             setState(() {
               documents = validUserIds;
-              users = fetchedUsers.where((user) => documents.contains(user['userID'])).toList();
+              users = fetchedUsers.where((user) => documents.contains(user['userID']) && !_blockedByList.contains(user['userID'])).toList();
 
-              // Kullanıcıları en son mesaj tarihine göre sırala
               users.sort((a, b) {
                 Timestamp? aTimestamp = latestMessageTimestampMap[a['userID']];
                 Timestamp? bTimestamp = latestMessageTimestampMap[b['userID']];
@@ -101,8 +111,6 @@ class _FriendsListPageState extends State<FriendsListPage> {
       });
     });
   }
-
-
 
   @override
   Widget build(BuildContext context) {

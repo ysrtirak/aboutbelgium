@@ -40,6 +40,17 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
   late InterstitialAd _interstitialAd;
   bool _isInterstitialAdReady = false;
   bool _isSendingMessage = false; // Mesaj gönderim kilidi
+  List<String> _blockedByList = [];
+
+  Future<void> _fetchBlockedByList() async {
+    _firestore.collection(userCollection).doc(_currentUserId).snapshots().listen((userDoc) {
+      if (userDoc.exists) {
+        _blockedByList = List<String>.from(userDoc.data()?['blockedBy'] ?? []);
+        setState(() {}); // Liste değiştiğinde yeniden çizin
+      }
+    });
+  }
+
 
   Future<void> _sendImageMessage() async {
       setState(() {
@@ -397,16 +408,23 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
     fetchUsersFromFirestore(); // Sayfa açıldığında güncel listeyi çek
   }
   // Mevcut fetchUsersFromFirestore işlevini güncelle
-  void fetchUsersFromFirestore() {
+  void fetchUsersFromFirestore() async {
+    await _fetchBlockedByList(); // Engelleyenleri önce al
+
     var userId = FirebaseAuth.instance.currentUser?.uid ?? '';
 
-    // Tüm sohbet koleksiyonunu tek seferde dinle
     FirebaseFirestore.instance.collection(privateChatCollection).snapshots().listen((chatRoomSnapshot) {
-      unreadCountStatusMap.clear(); // Haritayı sıfırla
+      unreadCountStatusMap.clear();
       int totalUnread = 0;
 
       for (var doc in chatRoomSnapshot.docs) {
-        // Yalnızca okunmamış mesajları sorgula
+        String cleanedUserId = doc.id.replaceAll(userId, '').replaceAll('_', '');
+
+        // Eğer kullanıcı sizi engellediyse, işlemden atla
+        if (_blockedByList.contains(cleanedUserId)) {
+          continue;
+        }
+
         FirebaseFirestore.instance
             .collection(privateChatCollection)
             .doc(doc.id)
@@ -415,18 +433,19 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
             .where(privateChatIsRead, isEqualTo: false)
             .snapshots()
             .listen((unreadMessagesSnapshot) {
-          String cleanedUserId = doc.id.replaceAll(userId, '').replaceAll('_', '');
           int unreadCount = unreadMessagesSnapshot.docs.length;
 
-          unreadCountStatusMap[cleanedUserId] = unreadCount;
-
-          // Toplam okunmamış mesaj sayısını güncelle
+          // Engellenen kullanıcıların unreadCount içine dahil edilmesini engelle
+          if (!_blockedByList.contains(cleanedUserId)) {
+            unreadCountStatusMap[cleanedUserId] = unreadCount;
+          }
           totalUnread = unreadCountStatusMap.values.where((count) => count > 0).length;
           totalUnreadUsers.value = totalUnread;
         });
       }
     });
   }
+
 
 
   int getUnreadCount() {
@@ -570,31 +589,35 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
         child: Column(
           children: [
             Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-                stream: _firestore.collection(generalMessages).orderBy(generalTime, descending: true).limit(100).snapshots(),
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  final messages = snapshot.data!.docs.reversed.toList(); // Reverse the list
-                  // Scroll to bottom when new message arrives
-                  if (messages.isNotEmpty) {
-                    Future.delayed(const Duration(milliseconds: 200), () {
-                      _scrollToBottom();
-                    });
-                  }
-                  return ListView.builder(
-                    controller: _scrollController,
-                    itemCount: messages.length,
-                    cacheExtent: 1000, // Yükleme aralığını optimize et
-                    itemBuilder: (context, index) {
-                      final messageData = messages[index];
-                      final isMe = messageData[generalUserId] == _currentUserId;
-                      return _buildMessageBubble(messageData, isMe);
-                    },
-                  );
-                },
-              ),
+              child:
+                StreamBuilder<QuerySnapshot>(
+                  stream: _firestore.collection(generalMessages).orderBy(generalTime, descending: true).snapshots(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final messages = snapshot.data!.docs.where((message) {
+                      // Eğer mesaj gönderen kullanıcı sizi engellediyse atla
+                      final userId = message[generalUserId];
+                      return !_blockedByList.contains(userId);
+                    }).toList().reversed.toList();
+
+                    if (messages.isNotEmpty) {
+                            Future.delayed(const Duration(milliseconds: 200), () {
+                              _scrollToBottom();
+                            });
+                          }
+                    return ListView.builder(
+                      controller: _scrollController,
+                      itemCount: messages.length,
+                      itemBuilder: (context, index) {
+                        final messageData = messages[index];
+                        final isMe = messageData[generalUserId] == _currentUserId;
+                        return _buildMessageBubble(messageData, isMe);
+                      },
+                    );
+                  },
+                ),
             ),
             _isUploadingImage ? _buildLoadingIndicator() : _buildMessageInput(),
           ],
@@ -714,8 +737,8 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
           if (!isMe) _buildUserProfileImage(userId),
           Flexible(
             child: GestureDetector(
-              onLongPress: isMe // Sadece kendi mesajları için çalışacak
-                  ? () async {
+          onLongPress: () async {
+          if (isMe) {
                 bool confirmDelete = await showDialog(
                   context: context,
                   builder: (context) => AlertDialog(
@@ -741,8 +764,18 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
                     generalChatImages: null,        // Resim URL'sini kaldır
                   });
                 }
-              }
-                  : null,
+              }else {
+            // Diğer kullanıcının mesajını şikayet etme işlemi
+            await _showReportDialog(
+              reportedUserId: userId,
+              reportedUserName: userN,
+              messageContent: text,
+              messageId: messageData.id,
+              imageUrl: imageUrl, // Resim URL'sini ekledik
+
+            );
+          }
+          },
               onTap: !isMe
                   ? () async {
                 Navigator.push(
@@ -816,6 +849,156 @@ class _MessageCommunityPageState extends State<MessageCommunityPage> {
           ),
         ],
       ),
+    );
+  }
+  Future<void> _showReportDialog({
+    required String reportedUserId,
+    required String reportedUserName,
+    required String messageContent,
+    required String messageId,
+    String? imageUrl,
+  }) async {
+    String reportReason = '';
+    String email = '';
+    String confirmEmail = '';
+    final _formKey = GlobalKey<FormState>();
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(
+            'Report it'.tr(),
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+          ),
+          content: SingleChildScrollView(
+            child: Form(
+              key: _formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Başlık ikonu eklendi
+                  Icon(
+                    Icons.report_problem,
+                    color: Colors.redAccent,
+                    size: 60,
+                  ),
+                  SizedBox(height: 10),
+                  Text(
+                    'Please enter your email address. This will be used to provide you with feedback.'.tr(),
+                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 20),
+                  TextFormField(
+                    decoration: InputDecoration(
+                      labelText: 'Your Email Address'.tr(),
+                      hintText: 'example@domain.com',
+                      prefixIcon: Icon(Icons.email),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter your email address.'.tr();
+                      } else if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
+                        return 'Enter a valid email address.'.tr();
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      email = value;
+                    },
+                  ),
+                  SizedBox(height: 15),
+                  TextFormField(
+                    decoration: InputDecoration(
+                      labelText: 'Verify Your Email Address'.tr(),
+                      hintText: 'example@domain.com',
+                      prefixIcon: Icon(Icons.email),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please re-enter your email address.'.tr();
+                      } else if (value != email) {
+                        return 'The email addresses do not match.'.tr();
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      confirmEmail = value;
+                    },
+                  ),
+                  SizedBox(height: 20),
+                  TextFormField(
+                    onChanged: (value) {
+                      reportReason = value;
+                    },
+                    decoration: InputDecoration(
+                      labelText: 'Reason for Complaint'.tr(),
+                      hintText: 'Please describe the issue...'.tr(),
+                      prefixIcon: Icon(Icons.comment),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    maxLines: 3,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel'.tr()),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onPressed: () async {
+                if (_formKey.currentState!.validate()) {
+                  if (reportReason.isNotEmpty) {
+                    await FirebaseFirestore.instance.collection('reports').add({
+                      'reportedUserId': reportedUserId,
+                      'reportedUserName': reportedUserName,
+                      'messageContent': messageContent,
+                      'messageId': messageId,
+                      'imageUrl': imageUrl,
+                      'reportReason': reportReason,
+                      'reportingUserId': _currentUserId,
+                      'reportingUserEmail': email,
+                      'timestamp': FieldValue.serverTimestamp(),
+                    });
+                    Navigator.of(context).pop();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Your complaint has been sent.'.tr())),
+                    );
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Please enter the reason for the complaint.'.tr())),
+                    );
+                  }
+                }
+              },
+              child: Text('Send'.tr()),
+            ),
+          ],
+        );
+      },
     );
   }
 

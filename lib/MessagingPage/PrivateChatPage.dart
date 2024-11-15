@@ -12,6 +12,7 @@ import 'package:aboutbelgium/AdsKeys.dart';
 import 'dart:async';
 import 'package:image/image.dart' as img;
 import 'dart:math';
+import 'dart:ui'; // Add this import
 
 class PrivateChatPage extends StatefulWidget {
   final String receiverId; // Hedef kullanıcının ID'si
@@ -38,7 +39,162 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
   bool _isInterstitialAdReady = false;
   bool _isUploadingImage = false; // Track if an image is being uploaded
   bool _isSendingMessage = false; // Mesaj gönderim kilidi
+  bool _isUserBlockedLocally = false; // Track local block status
+// Rapor diyaloğu için gerekli değişkenler ve anahtar
+  final _reportFormKey = GlobalKey<FormState>();
+  String reportReason = '';
+  String email = '';
+  String confirmEmail = '';
 
+  // Rapor diyaloğu metodu
+  Future<void> _showReportDialog({
+    required String reportedUserId,
+    required String reportedUserName,
+    required String messageContent,
+    required String messageId,
+    String? imageUrl,
+  }) async {
+    reportReason = '';
+    email = '';
+    confirmEmail = '';
+
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text(
+            'Report Message'.tr(),
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(15),
+          ),
+          content: SingleChildScrollView(
+            child: Form(
+              key: _reportFormKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.report_problem,
+                    color: Colors.redAccent,
+                    size: 60,
+                  ),
+                  SizedBox(height: 10),
+                  Text(
+                    'Please enter your email address. This will be used to provide you with feedback.'.tr(),
+                    style: TextStyle(fontSize: 14, color: Colors.grey[700]),
+                    textAlign: TextAlign.center,
+                  ),
+                  SizedBox(height: 20),
+                  TextFormField(
+                    decoration: InputDecoration(
+                      labelText: 'Your Email Address'.tr(),
+                      hintText: 'example@domain.com',
+                      prefixIcon: Icon(Icons.email),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter your email address.'.tr();
+                      } else if (!RegExp(r'^[^@]+@[^@]+\.[^@]+').hasMatch(value)) {
+                        return 'Enter a valid email address.'.tr();
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      email = value;
+                    },
+                  ),
+                  SizedBox(height: 15),
+                  TextFormField(
+                    decoration: InputDecoration(
+                      labelText: 'Verify Your Email Address'.tr(),
+                      hintText: 'example@domain.com',
+                      prefixIcon: Icon(Icons.email),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    keyboardType: TextInputType.emailAddress,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please re-enter your email address.'.tr();
+                      } else if (value != email) {
+                        return 'The email addresses do not match.'.tr();
+                      }
+                      return null;
+                    },
+                    onChanged: (value) {
+                      confirmEmail = value;
+                    },
+                  ),
+                  SizedBox(height: 20),
+                  TextFormField(
+                    onChanged: (value) {
+                      reportReason = value;
+                    },
+                    decoration: InputDecoration(
+                      labelText: 'Reason for Complaint'.tr(),
+                      hintText: 'Please describe the issue...'.tr(),
+                      prefixIcon: Icon(Icons.comment),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    maxLines: 3,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter the reason for the complaint.'.tr();
+                      }
+                      return null;
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cancel'.tr()),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              onPressed: () async {
+                if (_reportFormKey.currentState!.validate()) {
+                  await FirebaseFirestore.instance.collection('reports').add({
+                    'reportedUserId': reportedUserId,
+                    'reportedUserName': reportedUserName,
+                    'messageContent': messageContent,
+                    'messageId': messageId,
+                    'imageUrl': imageUrl,
+                    'reportReason': reportReason,
+                    'reportingUserId': _currentUserId,
+                    'reportingUserEmail': email,
+                    'timestamp': FieldValue.serverTimestamp(),
+                  });
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Your complaint has been sent.'.tr())),
+                  );
+                }
+              },
+              child: Text('Send'.tr()),
+            ),
+          ],
+        );
+      },
+    );
+  }
   Future<void> _sendImageMessage() async {
     setState(() {
       _isUploadingImage = true; // Set loading state to true
@@ -155,6 +311,8 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
       }
     });
     _loadInterstitialAd();
+    _fetchInitialBlockStatus(); // Fetch initial block status
+
   }
   void _showRandomInterstitialAds(){
     Random random = Random();
@@ -208,19 +366,128 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
       print("Interstitial ad is not ready.");
     }
   }
+  Future<void> _toggleBlockUser() async {
+    try {
+      final userDoc = _firestore.collection(userCollection).doc(widget.receiverId);
+      final userSnapshot = await userDoc.get();
+
+      if (userSnapshot.exists) {
+        final blockedBy = userSnapshot.data()?['blockedBy'] ?? [];
+        final isBlocked = blockedBy.contains(_currentUserId);
+
+        if (isBlocked) {
+          // Unblock the user
+          await userDoc.update({
+            'blockedBy': FieldValue.arrayRemove([_currentUserId]),
+          });
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('User unblocked.'.tr()),
+          ));
+        } else {
+          // Block the user
+          await userDoc.update({
+            'blockedBy': FieldValue.arrayUnion([_currentUserId]),
+          });
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('User blocked.'.tr()),
+          ));
+        }
+
+        // Update local block status
+        setState(() {
+          _isUserBlockedLocally = !isBlocked;
+        });
+      }
+    } catch (e) {
+      print('Error toggling block: $e');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('An error occurred while updating block status.'.tr()),
+      ));
+    }
+  }
+  Future<bool> _isUserBlocked() async {
+    try {
+      final userDoc = await _firestore.collection(userCollection).doc(widget.receiverId).get();
+      final blockedBy = userDoc.data()?['blockedBy'] ?? [];
+      return blockedBy.contains(_currentUserId);
+    } catch (e) {
+      print('Error checking block status: $e');
+      return false;
+    }
+  }
+  Future<void> _fetchInitialBlockStatus() async {
+    bool isBlocked = await _isUserBlocked();
+    setState(() {
+      _isUserBlockedLocally = isBlocked;
+    });
+  }
   @override
   Widget build(BuildContext context) {
     final chatRoomId = _createChatRoomId(_currentUserId, widget.receiverId);
 
     return Scaffold(
       appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        actions: [
+          PopupMenuButton<String>(
+            icon: Icon(Icons.more_vert, color: Colors.red[200]), // Özel simge
+            onSelected: (value) async {
+              if (value == 'block') {
+                // Kullanıcıyı engellemeden önce onay diyalogu göster
+                bool isBlocked = await _isUserBlocked();
+                String actionTitle = isBlocked ? 'Unblock User' : 'Block User';
+                String actionContent = isBlocked
+                    ? 'Are you sure you want to unblock this user?'
+                    : 'Are you sure you want to block this user?';
+                String actionButton = isBlocked ? 'Unblock' : 'Block';
+
+                bool confirm = await showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text(actionTitle.tr()),
+                    content: Text(actionContent.tr()),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(false),
+                        child: Text('Cancel'.tr()),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(true),
+                        child: Text(actionButton.tr()),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm) {
+                  await _toggleBlockUser();
+                }
+              }
+            },
+            itemBuilder: (BuildContext context) => [
+              PopupMenuItem(
+                value: 'block',
+                child: ListTile(
+                  leading: Icon(
+                    _isUserBlockedLocally ? Icons.person_remove : Icons.block,
+                    color: Colors.red,
+                  ),
+                  title: Text(
+                    _isUserBlockedLocally ? 'Unblock User'.tr() : 'Block User'.tr(),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          receiverData != null
-              ? _buildUserProfile() // Profil bilgileri doluysa göster
-              : const Center(child: CircularProgressIndicator()), // Yükleniyorsa bekletiyoruz
-          Expanded(
+          Column(
+            children: [
+              receiverData != null
+                  ? _buildUserProfile()
+                  : const Center(child: CircularProgressIndicator()),
+              Expanded(
             child: StreamBuilder<QuerySnapshot>(
               stream: _firestore.collection(privateChatCollection)
                   .doc(chatRoomId)
@@ -253,6 +520,20 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
           _isUploadingImage ? _buildLoadingIndicator() : _buildMessageInput(chatRoomId), // Removed the extra semicolon here
         ],
       ),
+        if (_isUserBlockedLocally)
+    Positioned.fill(
+      child: AbsorbPointer(
+        absorbing: true,
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 5.0, sigmaY: 5.0),
+          child: Container(
+            color: Colors.black.withOpacity(0.2),
+          ),
+        ),
+      ),
+    ),
+    ],
+    ),
     );
   }
 
@@ -405,7 +686,6 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
 
   // Mesaj balonları
   Widget _buildMessageItem(QueryDocumentSnapshot messageData, bool isMe) {
-
     Map<String, dynamic> data = messageData.data() as Map<String, dynamic>;
 
     String text = data['text'] ?? '';
@@ -418,41 +698,50 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
         children: [
           Flexible(
             child: GestureDetector(
-              onLongPress: isMe // Only allow the current user to delete their messages
-                  ? () async {
-                bool confirmDelete = await showDialog(
-                  context: context,
-                  builder: (context) => AlertDialog(
-                    title:  Text('Delete Message'.tr()),
-                    content:  Text('Are you sure you want to delete this message?'.tr()),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(false),
-                        child:  Text('Cancel'.tr()),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(true),
-                        child:  Text('Delete'.tr()),
-                      ),
-                    ],
-                  ),
-                );
+              onLongPress: () async {
+                if (isMe) {
+                  // Kendi mesajını silme işlemi
+                  bool confirmDelete = await showDialog(
+                    context: context,
+                    builder: (context) => AlertDialog(
+                      title: Text('Delete Message'.tr()),
+                      content: Text('Are you sure you want to delete this message?'.tr()),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(false),
+                          child: Text('Cancel'.tr()),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(true),
+                          child: Text('Delete'.tr()),
+                        ),
+                      ],
+                    ),
+                  );
 
-                if (confirmDelete) {
-                  // Update the message as deleted
-                  await _firestore
-                      .collection('facetofacechat')
-                      .doc(_createChatRoomId(_currentUserId, widget.receiverId))
-                      .collection('messages')
-                      .doc(messageData.id)
-                      .update({
-                    'text': '-----!!!', // Set the text as "Deleted"
-                    'imageUrl': null,
-                    // Remove the image URL
-                  });
+                  if (confirmDelete) {
+                    // Mesajı silme işlemi
+                    await _firestore
+                        .collection('facetofacechat')
+                        .doc(_createChatRoomId(_currentUserId, widget.receiverId))
+                        .collection('messages')
+                        .doc(messageData.id)
+                        .update({
+                      'text': '-----!!!', // Mesaj silindi olarak işaretlenir
+                      'imageUrl': null,
+                    });
+                  }
+                } else {
+                  // Karşı tarafın mesajını raporlama işlemi
+                  await _showReportDialog(
+                    reportedUserId: widget.receiverId,
+                    reportedUserName: receiverData?[userName] ?? 'Unknown',
+                    messageContent: text,
+                    messageId: messageData.id,
+                    imageUrl: imageUrl,
+                  );
                 }
-              }
-                  : null,
+              },
               child: Container(
                 decoration: BoxDecoration(
                   color: isMe ? Colors.green[100] : Colors.white,
@@ -469,7 +758,7 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
                           text,
                           style: TextStyle(color: Colors.grey[800], fontFamily: 'Roboto'),
                         ),
-                      if (imageUrl != null) // Show image if available
+                      if (imageUrl != null)
                         GestureDetector(
                           onTap: () {
                             setState(() {
@@ -479,10 +768,10 @@ class _PrivateChatPageState extends State<PrivateChatPage> with WidgetsBindingOb
                           child: AnimatedContainer(
                             duration: const Duration(milliseconds: 300),
                             child: _isImageFullScreen
-                                ? Image.network(imageUrl) // Show full-screen image
+                                ? Image.network(imageUrl)
                                 : Image.network(
                               imageUrl,
-                              width: 150, // Show small-sized image
+                              width: 150,
                               height: 150,
                               fit: BoxFit.cover,
                             ),
